@@ -1,7 +1,7 @@
 # X5 Analytics Dashboard status
 
 Date: 2026-08-10
-Branch: `main` (local changes not published)
+Branch: `codex/x5-secure-real-data-dashboard` (Kaspi changes local, not published)
 
 ## Outcome
 
@@ -22,3 +22,10 @@ Branch: `main` (local changes not published)
 Do not publish this dashboard before the shared Supabase migration and Edge Functions are deployed. A fresh protected Supabase deployment credential is not available in the current environment.
 
 Best next action: apply the backend migration/functions, set the dashboard repository `X5_SUPABASE_ANON_KEY`, run the two-admin and outsider access UAT, then publish GitHub Pages.
+
+## Kaspi review queue (2026-08-10)
+
+- The Payments section now has a protected Kaspi queue with payment code, buyer, package, amount, expiry, and Confirm/Reject actions.
+- Confirmation calls `review_kaspi_credit_payment`; the server, not the browser, checks the dashboard-admin list and performs the idempotent credit grant.
+- Verified with `pnpm run check` and `pnpm run build`.
+- The UI is not live yet because its RPCs depend on the unapplied Supabase migrations in the X5SSD feature branch.
