@@ -5,6 +5,7 @@
 | [Tabler](https://github.com/tabler/tabler) | `@tabler/core` 1.4.0, 2026-08-10 | MIT | Responsive dashboard layout, typography and component foundation; X5 colors and information architecture adapted locally. |
 | [Apache ECharts](https://github.com/apache/echarts) | `echarts` 6.1.0, 2026-08-10 | Apache-2.0 | Growth, platform and distribution charts. |
 | [Vite](https://github.com/vitejs/vite) | 8.2.1, 2026-08-10 | MIT | Build and static deployment foundation. |
+| [Supabase JavaScript](https://github.com/supabase/supabase-js) | 2.112.2, 2026-08-10 | MIT | Existing X5 authentication session and protected analytics RPC client. |
 | [appstore-reports-dashboard](https://github.com/abataille/appstore-reports-dashboard) | repository reviewed 2026-08-10 | MIT | Reference architecture for App Store report ingestion and normalized dashboard snapshots; no source copied verbatim. |
 | [gplay](https://github.com/tamtom/play-console-cli) | repository reviewed 2026-08-10 | MIT | Reference path for Google Play statistics and financial reports through the official GCS bucket; no source copied verbatim. |
 

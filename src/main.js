@@ -1,338 +1,347 @@
 import { init, use } from "echarts/core";
-import { LineChart, PieChart } from "echarts/charts";
+import { LineChart } from "echarts/charts";
 import { GridComponent, LegendComponent, TooltipComponent } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
+import { dashboardApi } from "./api.js";
+import { isConfigured, supabase } from "./supabase.js";
 import "./styles.css";
 
-use([LineChart, PieChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
+use([LineChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
 
-const REMOTE_DATA_URL = "https://raw.githubusercontent.com/tooyakov-art/x5/main/analytics-data/latest.json";
-const LOCAL_DATA_URL = `${import.meta.env.BASE_URL}data/latest.json`;
-const numberFormatter = new Intl.NumberFormat("ru-RU");
-const currencyFormatter = new Intl.NumberFormat("ru-RU", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
-const dateFormatter = new Intl.DateTimeFormat("ru-RU", { dateStyle: "medium", timeStyle: "short" });
+const app = document.querySelector("#app");
+const nf = new Intl.NumberFormat("ru-RU");
+const money = new Intl.NumberFormat("ru-RU", { style: "currency", currency: "KZT", maximumFractionDigits: 0 });
+const dtf = new Intl.DateTimeFormat("ru-RU", { dateStyle: "medium", timeStyle: "short" });
+const df = new Intl.DateTimeFormat("ru-RU", { dateStyle: "medium" });
 
-let dashboardData = null;
+const state = {
+  session: null,
+  allowed: false,
+  tab: "overview",
+  period: "30",
+  filters: { platform: "", country: "", city: "", role: "", provider: "", product: "" },
+  overview: null,
+  timeseries: [],
+  users: { rows: [], total: 0 },
+  payments: { rows: [], total: 0 },
+  sources: [],
+  loading: false,
+  error: "",
+};
+
 let trendChart = null;
-let platformChart = null;
-let selectedPeriod = 30;
 
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
+const esc = (value) => String(value ?? "")
+  .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+  .replaceAll('"', "&quot;").replaceAll("'", "&#039;");
+const n = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
+const nullable = (value) => value === "" ? null : value;
+const labelRole = (value) => value === "specialist" ? "Специалист" : value === "entrepreneur" ? "Предприниматель" : "Не указано";
+const labelStatus = (value) => ({ succeeded: "Успешно", pending: "Ожидает", failed: "Ошибка", cancelled: "Отменено", expired: "Истекло", refunded: "Возврат", rejected: "Отклонено" }[value] || value || "—");
+const labelProvider = (value) => ({ apple: "Apple", google_play: "Google Play", kaspi: "Kaspi", card: "Карта" }[value] || value || "—");
+
+function dateRange() {
+  const to = new Date();
+  const from = new Date(to);
+  if (state.period === "today") from.setHours(0, 0, 0, 0);
+  else from.setDate(from.getDate() - Number(state.period));
+  return { from: from.toISOString(), to: to.toISOString() };
 }
 
-function hasNumber(value) {
-  return typeof value === "number" && Number.isFinite(value);
+function baseParams() {
+  const { from, to } = dateRange();
+  return {
+    p_from: from,
+    p_to: to,
+    p_platform: nullable(state.filters.platform),
+    p_country: nullable(state.filters.country.trim().toUpperCase()),
+    p_city: nullable(state.filters.city.trim()),
+    p_role: nullable(state.filters.role),
+  };
 }
 
-function formatNumber(value) {
-  return hasNumber(value) ? numberFormatter.format(value) : "—";
+function renderLoading(message = "Загружаю реальные данные…") {
+  app.innerHTML = `<main class="center-screen"><div class="loader"></div><h1>${esc(message)}</h1></main>`;
 }
 
-function formatMoney(value, currency = "USD") {
-  if (!hasNumber(value)) return "—";
-  if (currency === "USD") return currencyFormatter.format(value);
-  return `${numberFormatter.format(value)} ${escapeHtml(currency)}`;
+function renderConfigError() {
+  app.innerHTML = `<main class="center-screen"><div class="brand-mark">X5</div><h1>Дашборд не настроен</h1><p>Отсутствует публичная конфигурация Supabase. Секретные серверные ключи в браузер не передаются.</p></main>`;
 }
 
-function metricHint(metric, fallback) {
-  if (metric?.status === "preparing") return "Apple формирует историю";
-  if (metric?.status === "not_connected") return "Источник не подключён";
-  return fallback;
-}
+function renderLogin(message = "") {
+  app.innerHTML = `
+    <main class="auth-shell">
+      <section class="auth-card">
+        <div class="brand"><div class="brand-mark">X5</div><div><strong>X5 App Analytics</strong><span>Закрытый кабинет владельцев</span></div></div>
+        <h1>Вход в аналитику</h1>
+        <p>Доступ разрешён только двум аккаунтам X5. Регистрация новых аккаунтов здесь отключена.</p>
+        <form id="login-form">
+          <label>Email<input name="email" type="email" autocomplete="email" required placeholder="name@example.com"></label>
+          <label>Пароль<input name="password" type="password" autocomplete="current-password" placeholder="Пароль X5"></label>
+          <button type="submit" class="primary-button">Войти</button>
+          <button type="button" id="magic-link" class="secondary-button">Получить ссылку на email</button>
+          <div id="auth-message" class="form-message ${message ? "error" : ""}">${esc(message)}</div>
+        </form>
+      </section>
+    </main>`;
 
-function metricCard(label, icon, metric, formatter = formatNumber, fallback = "За выбранный период") {
-  const value = metric && hasNumber(metric.value) ? formatter(metric.value, metric.currency) : "—";
-  return `
-    <article class="metric-card">
-      <div class="metric-top">
-        <span class="metric-label">${escapeHtml(label)}</span>
-        <span class="metric-icon" aria-hidden="true">${icon}</span>
-      </div>
-      <div class="metric-value">${value}</div>
-      <div class="metric-hint">${escapeHtml(metricHint(metric, fallback))}</div>
-    </article>`;
-}
-
-function statusMeta(status) {
-  if (status === "connected" || status === "ready") return { cls: "ok", text: "Подключено", dot: "" };
-  if (status === "preparing") return { cls: "pending", text: "Собирает данные", dot: "pending" };
-  return { cls: "off", text: "Не подключено", dot: "offline" };
-}
-
-function sourceRow(name, detail, status) {
-  const meta = statusMeta(status);
-  return `
-    <div class="source-row">
-      <div>
-        <div class="source-name">${escapeHtml(name)}</div>
-        <div class="source-detail">${escapeHtml(detail)}</div>
-      </div>
-      <span class="source-badge ${meta.cls}">${meta.text}</span>
-    </div>`;
-}
-
-function renderShell(data) {
-  const overview = data.overview || {};
-  const sync = data.sync || {};
-  const overall = statusMeta(sync.status);
-  const updated = data.generatedAt ? dateFormatter.format(new Date(data.generatedAt)) : "нет данных";
-
-  document.querySelector("#app").innerHTML = `
-    <div class="app-shell">
-      <header class="topbar">
-        <div class="topbar-inner">
-          <div class="brand">
-            <div class="brand-mark">X5</div>
-            <div>
-              <div class="brand-title">X5 App Analytics</div>
-              <div class="brand-subtitle">Apple · Android · платежи · рост</div>
-            </div>
-          </div>
-          <div class="topbar-actions">
-            <div class="updated-at">Обновлено<br><strong>${escapeHtml(updated)}</strong></div>
-            <button class="refresh-button" id="refresh-data" type="button">Обновить</button>
-          </div>
-        </div>
-      </header>
-
-      <main class="dashboard">
-        <section class="hero">
-          <div>
-            <h1>Развитие приложения</h1>
-            <p>Скачивания, установки, оплаты и удержание X5. Данные магазинов агрегированы: Apple и Google не раскрывают личность человека, который просто скачал приложение.</p>
-          </div>
-          <div class="status-pill"><span class="status-dot ${overall.dot}"></span>${escapeHtml(sync.message || overall.text)}</div>
-        </section>
-
-        <section class="kpi-grid" aria-label="Ключевые показатели">
-          ${metricCard("Скачивания", "↓", overview.downloads)}
-          ${metricCard("Установки", "↗", overview.installs)}
-          ${metricCard("Покупки", "●", overview.purchases)}
-          ${metricCard("Выручка", "$", overview.revenue, formatMoney)}
-          ${metricCard("Подписки", "∞", overview.activeSubscriptions)}
-          ${metricCard("Возвраты", "↩", overview.refunds)}
-        </section>
-
-        <section class="content-grid">
-          <article class="panel">
-            <div class="panel-header">
-              <div>
-                <div class="panel-title">Динамика роста</div>
-                <div class="panel-subtitle">Скачивания, установки и покупки по дням</div>
-              </div>
-              <div class="period-switch" aria-label="Период">
-                <button class="period-button" data-period="7">7 дней</button>
-                <button class="period-button active" data-period="30">30 дней</button>
-                <button class="period-button" data-period="90">90 дней</button>
-              </div>
-            </div>
-            <div id="trend-chart" class="chart"></div>
-            <div id="trend-empty" class="empty-state" hidden></div>
-          </article>
-
-          <aside class="panel">
-            <div class="panel-header">
-              <div>
-                <div class="panel-title">Источники данных</div>
-                <div class="panel-subtitle">Состояние подключений</div>
-              </div>
-            </div>
-            <div class="source-list">
-              ${sourceRow("App Store Connect", data.sources?.apple?.detail || "Analytics Reports", data.sources?.apple?.status)}
-              ${sourceRow("Google Play", data.sources?.google?.detail || "Statistics & financial reports", data.sources?.google?.status)}
-              ${sourceRow("Платежи X5", data.sources?.payments?.detail || "Проверенные транзакции", data.sources?.payments?.status)}
-            </div>
-            <div class="notice">Имена покупателей не публикуются в открытом дашборде. Здесь показываются только агрегированные показатели.</div>
-          </aside>
-        </section>
-
-        <section class="lower-grid">
-          <article class="panel">
-            <div class="panel-header">
-              <div>
-                <div class="panel-title">Apple / Android</div>
-                <div class="panel-subtitle">Распределение установок по платформам</div>
-              </div>
-            </div>
-            <div id="platform-chart" class="chart compact"></div>
-            <div id="platform-empty" class="empty-state" hidden></div>
-          </article>
-
-          <article class="panel">
-            <div class="panel-header">
-              <div>
-                <div class="panel-title">Воронка</div>
-                <div class="panel-subtitle">Агрегированный путь от скачивания до оплаты</div>
-              </div>
-            </div>
-            <div id="funnel" class="funnel"></div>
-          </article>
-        </section>
-
-        <section class="lower-grid">
-          <article class="panel">
-            <div class="panel-header">
-              <div>
-                <div class="panel-title">Страны</div>
-                <div class="panel-subtitle">Где скачивают приложение</div>
-              </div>
-            </div>
-            <div id="countries-table" class="table-wrap"></div>
-          </article>
-
-          <article class="panel">
-            <div class="panel-header">
-              <div>
-                <div class="panel-title">Последние сборки</div>
-                <div class="panel-subtitle">Состояние публикаций в магазинах</div>
-              </div>
-            </div>
-            <div id="builds-table" class="table-wrap"></div>
-          </article>
-        </section>
-      </main>
-    </div>`;
-
-  document.querySelector("#refresh-data").addEventListener("click", () => loadData(true));
-  document.querySelectorAll("[data-period]").forEach((button) => {
-    button.addEventListener("click", () => {
-      selectedPeriod = Number(button.dataset.period);
-      document.querySelectorAll("[data-period]").forEach((node) => node.classList.toggle("active", node === button));
-      renderTrend(data.trend || []);
-    });
+  const form = document.querySelector("#login-form");
+  const messageNode = document.querySelector("#auth-message");
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    messageNode.className = "form-message";
+    messageNode.textContent = "Проверяю аккаунт…";
+    const data = new FormData(form);
+    const email = String(data.get("email") || "").trim();
+    const password = String(data.get("password") || "");
+    if (!password) {
+      messageNode.className = "form-message error";
+      messageNode.textContent = "Введите пароль или запросите ссылку на email.";
+      return;
+    }
+    try {
+      await dashboardApi.signIn(email, password);
+      await bootAuthenticated();
+    } catch (error) {
+      messageNode.className = "form-message error";
+      messageNode.textContent = error.message;
+    }
   });
-
-  renderTrend(data.trend || []);
-  renderPlatforms(data.platforms || []);
-  renderFunnel(overview);
-  renderCountries(data.countries || []);
-  renderBuilds(data.builds || []);
+  document.querySelector("#magic-link").addEventListener("click", async () => {
+    const email = String(new FormData(form).get("email") || "").trim();
+    if (!email) {
+      messageNode.className = "form-message error";
+      messageNode.textContent = "Сначала укажите email.";
+      return;
+    }
+    try {
+      await dashboardApi.sendMagicLink(email);
+      messageNode.className = "form-message success";
+      messageNode.textContent = "Ссылка отправлена. Откройте её на этом устройстве.";
+    } catch (error) {
+      messageNode.className = "form-message error";
+      messageNode.textContent = error.message;
+    }
+  });
 }
 
-function emptyMessage(targetId, message) {
-  const target = document.querySelector(targetId);
-  target.innerHTML = `<div><strong>Данные ещё собираются</strong>${escapeHtml(message)}</div>`;
-  target.hidden = false;
+function renderDenied() {
+  app.innerHTML = `<main class="center-screen"><div class="brand-mark">X5</div><h1>Доступ закрыт</h1><p>Этот аккаунт не входит в список владельцев дашборда.</p><button id="sign-out" class="secondary-button compact">Выйти</button></main>`;
+  document.querySelector("#sign-out").addEventListener("click", async () => { await dashboardApi.signOut(); renderLogin(); });
 }
 
-function renderTrend(rows) {
-  const chartNode = document.querySelector("#trend-chart");
-  const emptyNode = document.querySelector("#trend-empty");
-  const visibleRows = rows.slice(-selectedPeriod);
-  if (!visibleRows.length) {
-    chartNode.hidden = true;
-    emptyMessage("#trend-empty", dashboardData?.sync?.detail || "Apple готовит исторический отчёт.");
-    return;
-  }
-  chartNode.hidden = false;
-  emptyNode.hidden = true;
+function navItem(id, label, icon) {
+  return `<button class="nav-item ${state.tab === id ? "active" : ""}" data-tab="${id}"><span>${icon}</span>${label}</button>`;
+}
+
+function filterBar() {
+  return `<section class="filters-panel">
+    <select id="period-filter" aria-label="Период">
+      <option value="today" ${state.period === "today" ? "selected" : ""}>Сегодня</option>
+      <option value="7" ${state.period === "7" ? "selected" : ""}>7 дней</option>
+      <option value="30" ${state.period === "30" ? "selected" : ""}>30 дней</option>
+      <option value="90" ${state.period === "90" ? "selected" : ""}>90 дней</option>
+    </select>
+    <select id="platform-filter"><option value="">Все платформы</option><option value="ios" ${state.filters.platform === "ios" ? "selected" : ""}>iOS</option><option value="android" ${state.filters.platform === "android" ? "selected" : ""}>Android</option></select>
+    <input id="country-filter" value="${esc(state.filters.country)}" maxlength="2" placeholder="Страна: KZ">
+    <input id="city-filter" value="${esc(state.filters.city)}" maxlength="80" placeholder="Город">
+    <select id="role-filter"><option value="">Все роли</option><option value="specialist" ${state.filters.role === "specialist" ? "selected" : ""}>Специалисты</option><option value="entrepreneur" ${state.filters.role === "entrepreneur" ? "selected" : ""}>Предприниматели</option></select>
+    <button id="apply-filters" class="primary-button compact">Применить</button>
+  </section>`;
+}
+
+function metricCard(label, value, hint, tone = "green") {
+  return `<article class="metric-card"><div class="metric-label">${esc(label)}</div><div class="metric-value ${tone}">${esc(value)}</div><div class="metric-hint">${esc(hint)}</div></article>`;
+}
+
+function renderOverview() {
+  const o = state.overview || {};
+  return `${filterBar()}
+    <section class="metric-grid">
+      ${metricCard("Скачивания", nf.format(n(o.downloads)), "App Store + Google Play")}
+      ${metricCard("Установки", nf.format(n(o.installs)), "Подтверждено магазинами", "blue")}
+      ${metricCard("Регистрации", nf.format(n(o.registrations)), `${o.registrationConversion ?? "—"}% от скачиваний`, "purple")}
+      ${metricCard("Активные", nf.format(n(o.activeUsers)), "За выбранный период", "blue")}
+      ${metricCard("Оплаты", nf.format(n(o.payments)), `${o.paymentConversion ?? "—"}% от регистраций`)}
+      ${metricCard("Выручка", money.format(n(o.revenue)), "Успешные операции", "green")}
+      ${metricCard("Подписки", nf.format(n(o.activeSubscriptions)), "Активные сейчас", "purple")}
+      ${metricCard("Возвраты", nf.format(n(o.refunds)), "Отменённые начисления", "red")}
+    </section>
+    <section class="panel chart-panel"><div class="panel-heading"><div><h2>Развитие приложения</h2><p>Скачивания, установки, регистрации и активные пользователи</p></div></div><div id="trend-chart" class="chart"></div></section>
+    <section class="panel"><div class="panel-heading"><div><h2>Источники данных</h2><p>Последняя успешная синхронизация</p></div></div>${sourcesMarkup()}</section>`;
+}
+
+function sourcesMarkup() {
+  if (!state.sources.length) return `<div class="empty-state">Источники ещё не настроены в Supabase.</div>`;
+  return `<div class="sources-grid">${state.sources.map((row) => `<article class="source-card"><div><strong>${esc(labelProvider(row.source))}</strong><p>${esc(row.detail || "Без описания")}</p></div><span class="status-badge ${esc(row.status)}">${esc(row.status)}</span><small>Успешно: ${row.lastSuccessAt ? esc(dtf.format(new Date(row.lastSuccessAt))) : "ещё нет"}</small></article>`).join("")}</div>`;
+}
+
+function renderUsers() {
+  const rows = state.users.rows || [];
+  return `${filterBar()}<section class="panel"><div class="panel-heading"><div><h2>Пользователи</h2><p>Найдено: ${nf.format(n(state.users.total))}</p></div><input id="user-search" class="search-input" placeholder="Имя, email, телефон" value=""></div>
+    <div class="table-wrap"><table><thead><tr><th>Пользователь</th><th>Роль</th><th>Страна / город</th><th>Платформа</th><th>Регистрация</th><th>Тариф</th><th>Оплаты</th></tr></thead><tbody>
+    ${rows.length ? rows.map((row) => `<tr data-user="${esc(row.id)}" class="clickable-row"><td><strong>${esc(row.name || "Без имени")}</strong><small>${esc(row.email || row.phone || "—")}</small></td><td>${esc(labelRole(row.role))}</td><td>${esc(row.country || "Не указано")} · ${esc(row.city || "Не указано")}</td><td>${esc(row.platform || "—")}</td><td>${row.registeredAt ? esc(df.format(new Date(row.registeredAt))) : "—"}</td><td>${esc(row.plan || "free")}</td><td>${nf.format(n(row.paymentCount))} · ${money.format(n(row.paymentTotal))}</td></tr>`).join("") : `<tr><td colspan="7" class="empty-cell">Пользователи за период не найдены</td></tr>`}
+    </tbody></table></div></section>`;
+}
+
+function renderPayments() {
+  const rows = state.payments.rows || [];
+  return `${filterBar()}<section class="filters-panel secondary"><select id="provider-filter"><option value="">Все способы</option><option value="apple">Apple</option><option value="google_play">Google Play</option><option value="kaspi">Kaspi</option><option value="card">Карта</option></select><input id="product-filter" placeholder="Товар или тариф" value="${esc(state.filters.product)}"><input id="payment-search" placeholder="Имя или email"><button id="payment-apply" class="secondary-button compact">Найти</button><button id="export-csv" class="primary-button compact">Скачать CSV</button></section>
+    <section class="panel"><div class="panel-heading"><div><h2>Платежи</h2><p>Найдено: ${nf.format(n(state.payments.total))}</p></div></div><div class="table-wrap"><table><thead><tr><th>Дата</th><th>Пользователь</th><th>Способ</th><th>Товар</th><th>Статус</th><th>Сумма</th></tr></thead><tbody>
+    ${rows.length ? rows.map((row) => `<tr><td>${row.purchasedAt ? esc(dtf.format(new Date(row.purchasedAt))) : "—"}</td><td><strong>${esc(row.userName || "Без имени")}</strong><small>${esc(row.email || "—")}</small></td><td>${esc(labelProvider(row.provider))}</td><td>${esc(row.product || "—")}</td><td><span class="payment-status ${esc(row.status)}">${esc(labelStatus(row.status))}</span></td><td>${row.amount == null ? "—" : esc(new Intl.NumberFormat("ru-RU", { style: "currency", currency: row.currency || "KZT" }).format(n(row.amount)))}</td></tr>`).join("") : `<tr><td colspan="6" class="empty-cell">Платежи за период не найдены</td></tr>`}
+    </tbody></table></div></section>`;
+}
+
+function renderGrowth() {
+  const rows = state.timeseries || [];
+  const totalReg = rows.reduce((sum, row) => sum + n(row.registrations), 0);
+  const totalActive = rows.reduce((sum, row) => sum + n(row.activeUsers), 0);
+  return `${filterBar()}<section class="metric-grid compact-grid">${metricCard("Регистрации", nf.format(totalReg), "За период", "purple")}${metricCard("Активность", nf.format(totalActive), "Дневные активные пользователи", "blue")}${metricCard("Конверсия регистрации", `${state.overview?.registrationConversion ?? "—"}%`, "Скачал → зарегистрировался")}${metricCard("Конверсия оплаты", `${state.overview?.paymentConversion ?? "—"}%`, "Зарегистрировался → оплатил")}</section><section class="panel chart-panel"><div class="panel-heading"><div><h2>Рост по дням</h2><p>Реальные события приложения и отчёты магазинов</p></div></div><div id="trend-chart" class="chart tall"></div></section>`;
+}
+
+function renderSources() {
+  return `<section class="panel"><div class="panel-heading"><div><h2>Состояние источников</h2><p>Ошибки не скрываются пустыми карточками</p></div><button id="refresh-sources" class="secondary-button compact">Обновить</button></div>${sourcesMarkup()}</section>`;
+}
+
+function renderDashboard() {
+  const content = state.error
+    ? `<section class="error-banner"><strong>Не удалось загрузить данные</strong><span>${esc(state.error)}</span><button id="retry" class="secondary-button compact">Повторить</button></section>`
+    : ({ overview: renderOverview, users: renderUsers, payments: renderPayments, growth: renderGrowth, sources: renderSources }[state.tab] || renderOverview)();
+
+  app.innerHTML = `<div class="app-shell"><aside class="sidebar"><div class="brand sidebar-brand"><div class="brand-mark">X5</div><div><strong>App Analytics</strong><span>Закрытый кабинет</span></div></div><nav>${navItem("overview", "Обзор", "⌂")}${navItem("users", "Пользователи", "◎")}${navItem("payments", "Платежи", "₸")}${navItem("growth", "Рост", "↗")}${navItem("sources", "Источники", "●")}</nav><div class="sidebar-user"><span>${esc(state.session?.user?.email || "")}</span><button id="sign-out">Выйти</button></div></aside><main class="main-content"><header><button id="mobile-menu" aria-label="Меню">☰</button><div><h1>${({ overview: "Обзор", users: "Пользователи", payments: "Платежи", growth: "Рост", sources: "Источники" }[state.tab])}</h1><p>Только реальные данные X5</p></div><button id="refresh" class="secondary-button compact">Обновить</button></header>${content}</main></div><div id="modal-root"></div>`;
+
+  bindDashboardEvents();
+  if (!state.error && ["overview", "growth"].includes(state.tab)) requestAnimationFrame(renderTrendChart);
+}
+
+function readFilters() {
+  state.period = document.querySelector("#period-filter")?.value || state.period;
+  state.filters.platform = document.querySelector("#platform-filter")?.value || "";
+  state.filters.country = document.querySelector("#country-filter")?.value || "";
+  state.filters.city = document.querySelector("#city-filter")?.value || "";
+  state.filters.role = document.querySelector("#role-filter")?.value || "";
+}
+
+function bindDashboardEvents() {
+  document.querySelectorAll("[data-tab]").forEach((button) => button.addEventListener("click", async () => { state.tab = button.dataset.tab; await loadData(); }));
+  document.querySelector("#sign-out")?.addEventListener("click", async () => { await dashboardApi.signOut(); state.session = null; state.allowed = false; renderLogin(); });
+  document.querySelector("#refresh")?.addEventListener("click", loadData);
+  document.querySelector("#retry")?.addEventListener("click", loadData);
+  document.querySelector("#apply-filters")?.addEventListener("click", async () => { readFilters(); await loadData(); });
+  document.querySelector("#mobile-menu")?.addEventListener("click", () => document.querySelector(".sidebar")?.classList.toggle("open"));
+  document.querySelectorAll("[data-user]").forEach((row) => row.addEventListener("click", () => showUser(row.dataset.user)));
+  document.querySelector("#user-search")?.addEventListener("keydown", async (event) => { if (event.key === "Enter") await loadUsers(event.target.value); });
+  document.querySelector("#payment-apply")?.addEventListener("click", async () => { state.filters.provider = document.querySelector("#provider-filter")?.value || ""; state.filters.product = document.querySelector("#product-filter")?.value || ""; await loadPayments(document.querySelector("#payment-search")?.value || ""); });
+  document.querySelector("#export-csv")?.addEventListener("click", exportPayments);
+  document.querySelector("#refresh-sources")?.addEventListener("click", loadData);
+}
+
+function renderTrendChart() {
+  const node = document.querySelector("#trend-chart");
+  if (!node) return;
   trendChart?.dispose();
-  trendChart = init(chartNode, null, { renderer: "canvas" });
+  trendChart = init(node);
+  const rows = state.timeseries || [];
   trendChart.setOption({
-    animationDuration: 550,
-    color: ["#a8ff00", "#38bdf8", "#8b5cf6"],
-    tooltip: { trigger: "axis", backgroundColor: "#151c28", borderColor: "rgba(255,255,255,.1)", textStyle: { color: "#f7f9fc" } },
-    legend: { top: 0, right: 0, textStyle: { color: "#8e9aad" }, data: ["Скачивания", "Установки", "Покупки"] },
-    grid: { left: 42, right: 20, top: 48, bottom: 32 },
-    xAxis: { type: "category", boundaryGap: false, data: visibleRows.map((row) => row.date), axisLine: { lineStyle: { color: "rgba(255,255,255,.09)" } }, axisLabel: { color: "#758196", hideOverlap: true } },
-    yAxis: { type: "value", minInterval: 1, splitLine: { lineStyle: { color: "rgba(255,255,255,.055)" } }, axisLabel: { color: "#758196" } },
+    color: ["#cbff18", "#38bdf8", "#a78bfa", "#f59e0b"],
+    tooltip: { trigger: "axis", backgroundColor: "#151722", borderColor: "#303341", textStyle: { color: "#fff" } },
+    legend: { top: 0, textStyle: { color: "#9da3b4" }, data: ["Скачивания", "Установки", "Регистрации", "Активные"] },
+    grid: { left: 42, right: 20, top: 50, bottom: 34 },
+    xAxis: { type: "category", boundaryGap: false, data: rows.map((r) => r.date), axisLabel: { color: "#747b8d", hideOverlap: true }, axisLine: { lineStyle: { color: "#2a2d38" } } },
+    yAxis: { type: "value", minInterval: 1, axisLabel: { color: "#747b8d" }, splitLine: { lineStyle: { color: "rgba(255,255,255,.05)" } } },
     series: [
-      { name: "Скачивания", type: "line", smooth: true, showSymbol: false, areaStyle: { opacity: .08 }, data: visibleRows.map((row) => row.downloads ?? 0) },
-      { name: "Установки", type: "line", smooth: true, showSymbol: false, data: visibleRows.map((row) => row.installs ?? 0) },
-      { name: "Покупки", type: "line", smooth: true, showSymbol: false, data: visibleRows.map((row) => row.purchases ?? 0) },
+      { name: "Скачивания", type: "line", smooth: true, showSymbol: false, data: rows.map((r) => n(r.downloads)) },
+      { name: "Установки", type: "line", smooth: true, showSymbol: false, data: rows.map((r) => n(r.installs)) },
+      { name: "Регистрации", type: "line", smooth: true, showSymbol: false, data: rows.map((r) => n(r.registrations)) },
+      { name: "Активные", type: "line", smooth: true, showSymbol: false, data: rows.map((r) => n(r.activeUsers)) },
     ],
   });
 }
 
-function renderPlatforms(platforms) {
-  const rows = platforms.filter((row) => hasNumber(row.installs) && row.installs > 0);
-  const chartNode = document.querySelector("#platform-chart");
-  const emptyNode = document.querySelector("#platform-empty");
-  if (!rows.length) {
-    chartNode.hidden = true;
-    emptyMessage("#platform-empty", "Появится после подключения отчётов App Store и Google Play.");
-    return;
+async function showUser(userId) {
+  const root = document.querySelector("#modal-root");
+  root.innerHTML = `<div class="modal-backdrop"><section class="modal-card"><div class="loader"></div></section></div>`;
+  try {
+    const data = await dashboardApi.userDetails(userId);
+    const p = data?.profile || {};
+    root.innerHTML = `<div class="modal-backdrop"><section class="modal-card"><button id="close-modal" class="modal-close">×</button><h2>${esc(p.name || "Без имени")}</h2><p>${esc(p.email || p.phone || "—")}</p><div class="detail-grid"><div><span>Роль</span><strong>${esc(labelRole(p.role))}</strong></div><div><span>Город</span><strong>${esc(p.country || "—")} · ${esc(p.city || "—")}</strong></div><div><span>Платформа</span><strong>${esc(p.platform || "—")}</strong></div><div><span>Тариф</span><strong>${esc(p.plan || "free")}</strong></div><div><span>Кредиты</span><strong>${nf.format(n(p.credits))}</strong></div><div><span>Подписка до</span><strong>${p.subscriptionEndDate ? esc(df.format(new Date(p.subscriptionEndDate))) : "—"}</strong></div></div><h3>Установки</h3><div class="mini-list">${(data.installations || []).map((i) => `<div><strong>${esc(i.platform)} · ${esc(i.version || "—")} (${esc(i.build || "—")})</strong><span>${i.lastSeenAt ? esc(dtf.format(new Date(i.lastSeenAt))) : "—"}</span></div>`).join("") || "Нет данных"}</div><h3>Платежи</h3><div class="mini-list">${(data.payments || []).map((t) => `<div><strong>${esc(labelProvider(t.provider))} · ${esc(t.product || "—")}</strong><span>${esc(labelStatus(t.status))} · ${t.amount == null ? "—" : money.format(n(t.amount))}</span></div>`).join("") || "Нет платежей"}</div></section></div>`;
+    document.querySelector("#close-modal").addEventListener("click", () => { root.innerHTML = ""; });
+    document.querySelector(".modal-backdrop").addEventListener("click", (event) => { if (event.target.classList.contains("modal-backdrop")) root.innerHTML = ""; });
+  } catch (error) {
+    root.innerHTML = `<div class="modal-backdrop"><section class="modal-card"><button id="close-modal" class="modal-close">×</button><h2>Ошибка</h2><p>${esc(error.message)}</p></section></div>`;
+    document.querySelector("#close-modal").addEventListener("click", () => { root.innerHTML = ""; });
   }
-  chartNode.hidden = false;
-  emptyNode.hidden = true;
-  platformChart?.dispose();
-  platformChart = init(chartNode, null, { renderer: "canvas" });
-  platformChart.setOption({
-    color: ["#a8ff00", "#38bdf8"],
-    tooltip: { trigger: "item", backgroundColor: "#151c28", borderColor: "rgba(255,255,255,.1)", textStyle: { color: "#f7f9fc" } },
-    legend: { bottom: 0, textStyle: { color: "#8e9aad" } },
-    series: [{ type: "pie", radius: ["52%", "75%"], center: ["50%", "45%"], label: { color: "#f7f9fc", formatter: "{d}%" }, data: rows.map((row) => ({ name: row.name, value: row.installs })) }],
+}
+
+function csvCell(value) { return `"${String(value ?? "").replaceAll('"', '""')}"`; }
+async function exportPayments() {
+  const rows = state.payments.rows || [];
+  const headers = ["Дата", "Пользователь", "Email", "Способ", "Товар", "Статус", "Сумма", "Валюта"];
+  const lines = [headers, ...rows.map((r) => [r.purchasedAt, r.userName, r.email, labelProvider(r.provider), r.product, labelStatus(r.status), r.amount, r.currency])];
+  const blob = new Blob(["\ufeff" + lines.map((row) => row.map(csvCell).join(";")).join("\n")], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url; link.download = `x5-payments-${new Date().toISOString().slice(0, 10)}.csv`; link.click();
+  URL.revokeObjectURL(url);
+  await dashboardApi.audit("csv_export", { section: "payments", count: rows.length });
+}
+
+async function loadUsers(search = null) {
+  state.loading = true;
+  try {
+    state.users = await dashboardApi.users({ ...baseParams(), p_search: nullable(search?.trim() || ""), p_limit: 200, p_offset: 0 });
+    state.error = "";
+  } catch (error) { state.error = error.message; }
+  state.loading = false; renderDashboard();
+}
+
+async function loadPayments(search = null) {
+  state.loading = true;
+  const { from, to } = dateRange();
+  try {
+    state.payments = await dashboardApi.payments({ p_from: from, p_to: to, p_provider: nullable(state.filters.provider), p_status: null, p_product: nullable(state.filters.product.trim()), p_search: nullable(search?.trim() || ""), p_limit: 500, p_offset: 0 });
+    state.error = "";
+  } catch (error) { state.error = error.message; }
+  state.loading = false; renderDashboard();
+}
+
+async function loadData() {
+  state.loading = true; state.error = ""; renderDashboard();
+  try {
+    const base = baseParams();
+    const overviewParams = { ...base, p_provider: nullable(state.filters.provider), p_product: nullable(state.filters.product) };
+    const common = [dashboardApi.overview(overviewParams), dashboardApi.timeseries(base), dashboardApi.sources()];
+    const [overview, timeseries, sources] = await Promise.all(common);
+    state.overview = overview; state.timeseries = timeseries || []; state.sources = sources || [];
+    if (state.tab === "users") state.users = await dashboardApi.users({ ...base, p_search: null, p_limit: 200, p_offset: 0 });
+    if (state.tab === "payments") {
+      const { from, to } = dateRange();
+      state.payments = await dashboardApi.payments({ p_from: from, p_to: to, p_provider: nullable(state.filters.provider), p_status: null, p_product: nullable(state.filters.product), p_search: null, p_limit: 500, p_offset: 0 });
+    }
+    await dashboardApi.audit("view", { tab: state.tab, period: state.period });
+  } catch (error) { state.error = error.message; }
+  state.loading = false; renderDashboard();
+}
+
+async function bootAuthenticated() {
+  renderLoading("Проверяю права доступа…");
+  try {
+    state.session = await dashboardApi.session();
+    if (!state.session) { renderLogin(); return; }
+    state.allowed = await dashboardApi.access();
+    if (!state.allowed) { renderDenied(); return; }
+    await dashboardApi.audit("login", { surface: "github_pages" });
+    await loadData();
+  } catch (error) { renderLogin(error.message); }
+}
+
+async function boot() {
+  if (!isConfigured) { renderConfigError(); return; }
+  await bootAuthenticated();
+  supabase.auth.onAuthStateChange((event) => {
+    if (event === "SIGNED_OUT") { state.session = null; state.allowed = false; renderLogin(); }
   });
 }
 
-function renderFunnel(overview) {
-  const items = [
-    ["Скачивания", overview.downloads?.value],
-    ["Установки", overview.installs?.value],
-    ["Покупки", overview.purchases?.value],
-  ];
-  const max = Math.max(...items.map(([, value]) => hasNumber(value) ? value : 0), 1);
-  const node = document.querySelector("#funnel");
-  if (!items.some(([, value]) => hasNumber(value))) {
-    node.innerHTML = `<div class="empty-state"><div><strong>Воронка ещё собирается</strong>Появится после первой синхронизации отчётов.</div></div>`;
-    return;
-  }
-  node.innerHTML = items.map(([label, value]) => `
-    <div class="funnel-row">
-      <div class="funnel-label">${label}</div>
-      <div class="funnel-track"><div class="funnel-fill" style="width:${hasNumber(value) ? Math.max((value / max) * 100, 2) : 0}%"></div></div>
-      <div class="funnel-value">${formatNumber(value)}</div>
-    </div>`).join("");
-}
-
-function renderCountries(countries) {
-  const node = document.querySelector("#countries-table");
-  if (!countries.length) {
-    node.innerHTML = `<div class="empty-state"><div><strong>География ещё собирается</strong>Apple формирует разбивку по территориям.</div></div>`;
-    return;
-  }
-  node.innerHTML = `<table class="x5-table"><thead><tr><th>Страна</th><th>Скачивания</th><th>Доля</th></tr></thead><tbody>${countries.slice(0, 12).map((row) => `<tr><td>${escapeHtml(row.country)}</td><td>${formatNumber(row.downloads)}</td><td>${hasNumber(row.share) ? `${row.share.toFixed(1)}%` : "—"}</td></tr>`).join("")}</tbody></table>`;
-}
-
-function renderBuilds(builds) {
-  const node = document.querySelector("#builds-table");
-  if (!builds.length) {
-    node.innerHTML = `<div class="empty-state"><div><strong>Сборки не найдены</strong>Проверьте подключение магазина.</div></div>`;
-    return;
-  }
-  node.innerHTML = `<table class="x5-table"><thead><tr><th>Платформа</th><th>Версия</th><th>Билд</th><th>Статус</th></tr></thead><tbody>${builds.map((row) => `<tr><td><span class="platform-badge">${escapeHtml(row.platform)}</span></td><td>${escapeHtml(row.version || "—")}</td><td>${escapeHtml(row.build || "—")}</td><td>${escapeHtml(row.status || "—")}</td></tr>`).join("")}</tbody></table>`;
-}
-
-async function fetchJson(url) {
-  const response = await fetch(`${url}${url.includes("?") ? "&" : "?"}t=${Date.now()}`, { cache: "no-store" });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  return response.json();
-}
-
-async function loadData(force = false) {
-  const button = document.querySelector("#refresh-data");
-  if (button) { button.disabled = true; button.textContent = "Обновляю…"; }
-  try {
-    dashboardData = await fetchJson(REMOTE_DATA_URL);
-  } catch (remoteError) {
-    console.warn("Remote analytics snapshot unavailable, using bundled snapshot", remoteError);
-    dashboardData = await fetchJson(LOCAL_DATA_URL);
-  }
-  renderShell(dashboardData);
-  if (force) window.scrollTo({ top: 0, behavior: "smooth" });
-}
-
-window.addEventListener("resize", () => {
-  trendChart?.resize();
-  platformChart?.resize();
-});
-
-loadData().catch((error) => {
-  document.querySelector("#app").innerHTML = `<div class="empty-state" style="min-height:100vh"><div><strong>Не удалось загрузить аналитику</strong>${escapeHtml(error.message)}</div></div>`;
-});
+window.addEventListener("resize", () => trendChart?.resize());
+boot();

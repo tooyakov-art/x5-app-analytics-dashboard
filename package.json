@@ -8,9 +8,10 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "check": "node scripts/check-data.mjs"
+    "check": "node scripts/check-security.mjs"
   },
   "dependencies": {
+    "@supabase/supabase-js": "2.112.2",
     "@tabler/core": "1.4.0",
     "echarts": "6.1.0"
   },

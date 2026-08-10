@@ -1,9 +1,24 @@
-# Status
+# X5 Analytics Dashboard status
 
-- Outcome: отдельный X5 App Analytics dashboard для скачиваний, оплат и роста.
-- Data: App Store Connect подключён; первая синхронизация 2026-08-10 увидела 10 сборок, включая iOS 1.1.6 (208) в TestFlight. Исторические Analytics Reports запрошены и могут готовиться до 24–48 часов.
-- Android: интерфейс готов, для данных нужны Google Play service account и GCS report bucket.
-- Payments: публично показываются только агрегаты; для Supabase нужен серверный read-only секрет.
-- Deployment: `main`; GitHub Pages is live at https://tooyakov-art.github.io/x5-app-analytics-dashboard/.
-- Verification: data contract passed; Vite production build passed; Pages returned HTTP 200 and referenced the production JS/CSS bundles (2026-08-10).
-- Next action: wait for Apple historical segments; add Google Play and protected Supabase credentials when available.
+Date: 2026-08-10
+Branch: `main` (local changes not published)
+
+## Outcome
+
+- Supabase Auth login with no public signup.
+- Access is checked by protected `dashboard_access_check`; all data comes from protected RPC functions.
+- Overview, users, user details, payments/CSV, growth, and source status sections are implemented with period and business filters.
+- The old public `data/latest.json` source is removed.
+- The current GitHub Pages URL still serves the previous public build until this protected version can be deployed safely: https://tooyakov-art.github.io/x5-app-analytics-dashboard/.
+
+## Verification
+
+- `pnpm run check`: passed security contract.
+- `pnpm run build`: passed production build.
+- No service-role, Apple, Google, Kaspi, or card secret is bundled in the browser.
+
+## Blocker and next action
+
+Do not publish this dashboard before the shared Supabase migration and Edge Functions are deployed. A fresh protected Supabase deployment credential is not available in the current environment.
+
+Best next action: apply the backend migration/functions, set the dashboard repository `X5_SUPABASE_ANON_KEY`, run the two-admin and outsider access UAT, then publish GitHub Pages.
