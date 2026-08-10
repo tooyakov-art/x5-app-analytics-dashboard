@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-10T05:50:04Z",
+  "sync": {
+    "status": "preparing",
+    "message": "Apple готовит исторические отчёты",
+    "detail": "Сборка 208 уже доступна в TestFlight; скачивания и commerce появятся после первой выгрузки Analytics Reports."
+  },
+  "overview": {
+    "downloads": { "value": null, "status": "preparing" },
+    "installs": { "value": null, "status": "preparing" },
+    "purchases": { "value": null, "status": "preparing" },
+    "revenue": { "value": null, "currency": "USD", "status": "preparing" },
+    "activeSubscriptions": { "value": null, "status": "not_connected" },
+    "refunds": { "value": null, "status": "not_connected" }
+  },
+  "platforms": [
+    { "id": "ios", "name": "iOS", "installs": null, "status": "preparing" },
+    { "id": "android", "name": "Android", "installs": null, "status": "not_connected" }
+  ],
+  "trend": [],
+  "countries": [],
+  "builds": [
+    { "platform": "iOS", "version": "1.1.6", "build": "208", "status": "IN_BETA_TESTING" }
+  ],
+  "sources": {
+    "apple": { "status": "preparing", "detail": "Build 208 VALID · Analytics Reports запрошены" },
+    "google": { "status": "not_connected", "detail": "Нужны Play service account и GCS report bucket" },
+    "payments": { "status": "not_connected", "detail": "Нужен серверный доступ к агрегатам Supabase" }
+  }
+}
