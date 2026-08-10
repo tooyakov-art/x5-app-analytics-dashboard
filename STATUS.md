@@ -25,7 +25,7 @@ Best next action: apply the backend migration/functions, set the dashboard repos
 
 ## Kaspi review queue (2026-08-10)
 
-- The Payments section now has a protected Kaspi queue with payment code, buyer, package, amount, expiry, and Confirm/Reject actions.
-- Confirmation calls `review_kaspi_credit_payment`; the server, not the browser, checks the dashboard-admin list and performs the idempotent credit grant.
+- The Payments section now has a protected read-only Kaspi queue with buyer, package, amount, expiry, and bank status.
+- Payment confirmation comes only from the official Kaspi `check` / `pay` provider callback. There are no manual Confirm/Reject buttons in the browser.
 - Verified with `pnpm run check` and `pnpm run build`.
 - The UI is not live yet because its RPCs depend on the unapplied Supabase migrations in the X5SSD feature branch.

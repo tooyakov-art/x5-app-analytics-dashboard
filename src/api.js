@@ -39,11 +39,6 @@ export const dashboardApi = {
   userDetails: (userId) => rpc("dashboard_user_details", { p_user_id: userId }),
   payments: (params) => rpc("dashboard_payments", params),
   kaspiPayments: (params = {}) => rpc("dashboard_kaspi_payments", params),
-  reviewKaspiPayment: (paymentId, decision, note = null) => rpc("review_kaspi_credit_payment", {
-    p_payment_id: paymentId,
-    p_decision: decision,
-    p_note: note,
-  }),
   sources: () => rpc("dashboard_sources_status"),
   audit: (action, metadata = {}) => rpc("dashboard_record_audit", { p_action: action, p_metadata: metadata }),
 };

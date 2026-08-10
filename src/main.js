@@ -189,8 +189,8 @@ function renderPayments() {
   const rows = state.payments.rows || [];
   const kaspiRows = state.kaspi.rows || [];
   return `${filterBar()}<section class="filters-panel secondary"><select id="provider-filter"><option value="">Все способы</option><option value="apple">Apple</option><option value="google_play">Google Play</option><option value="kaspi">Kaspi</option><option value="card">Карта</option></select><input id="product-filter" placeholder="Товар или тариф" value="${esc(state.filters.product)}"><input id="payment-search" placeholder="Имя или email"><button id="payment-apply" class="secondary-button compact">Найти</button><button id="export-csv" class="primary-button compact">Скачать CSV</button></section>
-    <section class="panel kaspi-queue"><div class="panel-heading"><div><h2>Kaspi — ожидают проверки</h2><p>Сверьте сумму и код платежа перед подтверждением. Найдено: ${nf.format(n(state.kaspi.total))}</p></div></div><div class="table-wrap"><table><thead><tr><th>Создано</th><th>Пользователь</th><th>Код</th><th>Пакет</th><th>Сумма</th><th>Действие</th></tr></thead><tbody>
-    ${kaspiRows.length ? kaspiRows.map((row) => `<tr><td>${row.createdAt ? esc(dtf.format(new Date(row.createdAt))) : "—"}<small>до ${row.expiresAt ? esc(dtf.format(new Date(row.expiresAt))) : "—"}</small></td><td><strong>${esc(row.buyerName || "Без имени")}</strong><small>${esc(row.email || "—")}</small></td><td><strong class="payment-code">${esc(row.paymentCode)}</strong></td><td>${nf.format(n(row.credits))} кредитов</td><td>${money.format(n(row.amountKzt))}</td><td><div class="payment-actions"><button class="primary-button compact" data-kaspi-confirm="${esc(row.id)}">Подтвердить</button><button class="danger-button compact" data-kaspi-reject="${esc(row.id)}">Отклонить</button></div></td></tr>`).join("") : `<tr><td colspan="6" class="empty-cell">Нет платежей Kaspi, ожидающих проверки</td></tr>`}
+    <section class="panel kaspi-queue"><div class="panel-heading"><div><h2>Kaspi — ожидают подтверждения банка</h2><p>Статус обновляет официальный callback Kaspi. Найдено: ${nf.format(n(state.kaspi.total))}</p></div></div><div class="table-wrap"><table><thead><tr><th>Создано</th><th>Пользователь</th><th>Пакет</th><th>Сумма</th><th>Статус</th></tr></thead><tbody>
+    ${kaspiRows.length ? kaspiRows.map((row) => `<tr><td>${row.createdAt ? esc(dtf.format(new Date(row.createdAt))) : "—"}<small>до ${row.expiresAt ? esc(dtf.format(new Date(row.expiresAt))) : "—"}</small></td><td><strong>${esc(row.buyerName || "Без имени")}</strong><small>${esc(row.email || "—")}</small></td><td>${nf.format(n(row.credits))} кредитов</td><td>${money.format(n(row.amountKzt))}</td><td><span class="payment-status ${esc(row.status)}">${esc(labelStatus(row.status))}</span></td></tr>`).join("") : `<tr><td colspan="5" class="empty-cell">Нет платежей Kaspi, ожидающих подтверждения банка</td></tr>`}
     </tbody></table></div></section>
     <section class="panel"><div class="panel-heading"><div><h2>Платежи</h2><p>Найдено: ${nf.format(n(state.payments.total))}</p></div></div><div class="table-wrap"><table><thead><tr><th>Дата</th><th>Пользователь</th><th>Способ</th><th>Товар</th><th>Статус</th><th>Сумма</th></tr></thead><tbody>
     ${rows.length ? rows.map((row) => `<tr><td>${row.purchasedAt ? esc(dtf.format(new Date(row.purchasedAt))) : "—"}</td><td><strong>${esc(row.userName || "Без имени")}</strong><small>${esc(row.email || "—")}</small></td><td>${esc(labelProvider(row.provider))}</td><td>${esc(row.product || "—")}</td><td><span class="payment-status ${esc(row.status)}">${esc(labelStatus(row.status))}</span></td><td>${row.amount == null ? "—" : esc(new Intl.NumberFormat("ru-RU", { style: "currency", currency: row.currency || "KZT" }).format(n(row.amount)))}</td></tr>`).join("") : `<tr><td colspan="6" class="empty-cell">Платежи за период не найдены</td></tr>`}
@@ -238,23 +238,7 @@ function bindDashboardEvents() {
   document.querySelector("#user-search")?.addEventListener("keydown", async (event) => { if (event.key === "Enter") await loadUsers(event.target.value); });
   document.querySelector("#payment-apply")?.addEventListener("click", async () => { state.filters.provider = document.querySelector("#provider-filter")?.value || ""; state.filters.product = document.querySelector("#product-filter")?.value || ""; await loadPayments(document.querySelector("#payment-search")?.value || ""); });
   document.querySelector("#export-csv")?.addEventListener("click", exportPayments);
-  document.querySelectorAll("[data-kaspi-confirm]").forEach((button) => button.addEventListener("click", () => reviewKaspi(button.dataset.kaspiConfirm, "confirmed")));
-  document.querySelectorAll("[data-kaspi-reject]").forEach((button) => button.addEventListener("click", () => reviewKaspi(button.dataset.kaspiReject, "rejected")));
   document.querySelector("#refresh-sources")?.addEventListener("click", loadData);
-}
-
-async function reviewKaspi(paymentId, decision) {
-  const action = decision === "confirmed" ? "начислить кредиты" : "отклонить заявку";
-  if (!window.confirm(`Подтвердить действие: ${action}?`)) return;
-  state.loading = true;
-  try {
-    await dashboardApi.reviewKaspiPayment(paymentId, decision);
-    await loadPayments();
-  } catch (error) {
-    state.error = error.message;
-    state.loading = false;
-    renderDashboard();
-  }
 }
 
 function renderTrendChart() {
