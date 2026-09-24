@@ -1,22 +1,29 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-const main = readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
-const api = readFileSync(new URL("../src/api.js", import.meta.url), "utf8");
-const supabase = readFileSync(new URL("../src/supabase.js", import.meta.url), "utf8");
+const read = (name) => readFileSync(new URL(`../src/${name}`, import.meta.url), "utf8");
+const main = read("main.js");
+const api = read("api.js");
+const supabase = read("supabase.js");
+const migration = readFileSync(
+  new URL("../../ios/supabase/migrations/20260925090000_admin_analytics.sql", import.meta.url),
+  "utf8",
+);
 
-assert.match(api, /dashboard_access_check/);
-for (const rpc of ["dashboard_overview", "dashboard_timeseries", "dashboard_users", "dashboard_user_details", "dashboard_payments", "dashboard_sources_status"]) {
-  assert.match(api, new RegExp(rpc));
+// Every report the dashboard calls must exist in the migration, and every one
+// of those functions must check the developer gate before returning data.
+const called = [...api.matchAll(/rpc\("(admin_analytics_[a-z_]+)"/g)].map((match) => match[1]);
+assert.ok(called.length >= 6, "the dashboard should call every report");
+for (const name of new Set(called)) {
+  assert.ok(migration.includes(`function public.${name}(`), `${name} is missing from the migration`);
+  const body = migration.split(`function public.${name}(`)[1].split("$$;")[0];
+  assert.match(body, /x5_require_developer\(\)/, `${name} does not check the developer gate`);
 }
-for (const rpc of ["dashboard_kaspi_payments"]) {
-  assert.match(api, new RegExp(rpc));
-}
+
+// The browser only ever gets the anon key; aggregates come from the server.
 assert.doesNotMatch(main + api + supabase, /service[_-]?role/i);
-assert.doesNotMatch(main + api, /raw\.githubusercontent\.com/);
-assert.doesNotMatch(main + api, /analytics-data\/latest\.json/);
-assert.match(main, /signInWithPassword|dashboardApi\.signIn/);
-assert.match(main, /csv_export/);
-assert.match(main, /официальный callback Kaspi/);
-assert.doesNotMatch(main + api, /reviewKaspiPayment|data-kaspi-confirm/);
+assert.doesNotMatch(main + api, /from\("(profiles|iap_entitlements|image_generation_requests)"\)/);
+assert.match(supabase, /VITE_SUPABASE_ANON_KEY/);
+assert.match(main, /downloadCsv/);
+
 console.log("Dashboard security contract OK");
